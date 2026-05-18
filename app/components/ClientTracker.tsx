@@ -1,44 +1,88 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useCallback } from 'react';
 import type { Expense } from '@/lib/types';
 
 export default function ClientTracker({ initialExpenses }: { initialExpenses: Expense[] }) {
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses);
   const [filter, setFilter] = useState<string>('all');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Form state
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState<'food' | 'transport' | 'utilities' | 'other'>('food');
 
-  const filteredExpenses = expenses.filter(e => filter === 'all' || e.category === filter);
-  
-  const totalSpend = filteredExpenses.reduce((acc, curr) => acc + curr.amount, 0);
+  const fetchFilteredExpenses = useCallback(async (cat: string) => {
+    try {
+      const url = cat === 'all' ? '/api/expenses' : `/api/expenses?category=${cat}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setExpenses(data);
+      }
+    } catch(err) {
+      console.error(err);
+    }
+  }, []);
 
-  const handleDelete = (id: string) => {
+  const handleFilterChange = (newCat: string) => {
+    setFilter(newCat);
+    fetchFilteredExpenses(newCat);
+  };
+
+  const totalSpend = expenses.reduce((acc, curr) => acc + curr.amount, 0);
+
+  const handleDelete = async (id: string) => {
     if (confirm("Are you sure you want to delete this expense?")) {
+      const prevExpenses = [...expenses];
+      
+      // Optimistic delete UI update
       setExpenses(prev => prev.filter(e => e.id !== id));
+
+      try {
+        const res = await fetch(`/api/expenses/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Deletion failed');
+      } catch (error) {
+        console.error(error);
+        alert('Failed to delete expense');
+        // Revert on failure
+        setExpenses(prevExpenses);
+      }
     }
   };
 
-  const handleAddSubmit = (e: FormEvent) => {
+  const handleAddSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!title || !amount) return;
 
-    const newExpense: Expense = {
-      id: crypto.randomUUID(),
-      title,
-      amount: parseFloat(amount),
-      category,
-      date: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-    };
+    setIsSubmitting(true);
+    try {
+      const res = await fetch('/api/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          amount: parseFloat(amount),
+          category,
+          date: new Date().toISOString()
+        })
+      });
 
-    setExpenses(prev => [newExpense, ...prev]);
-    setTitle('');
-    setAmount('');
-    setCategory('food');
+      if (!res.ok) throw new Error('Failed to add');
+
+      // Re-fetch to update the list and get real DB IDs, applying current filter constraint
+      await fetchFilteredExpenses(filter);
+      
+      setTitle('');
+      setAmount('');
+      setCategory('food');
+    } catch (error) {
+      console.error(error);
+      alert('Failed to add expense');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -87,8 +131,8 @@ export default function ClientTracker({ initialExpenses }: { initialExpenses: Ex
             </div>
           </div>
 
-          <button type="submit" className="btn-primary">
-            Add Expense
+          <button type="submit" className="btn-primary" disabled={isSubmitting}>
+            {isSubmitting ? 'Adding...' : 'Add Expense'}
           </button>
         </form>
       </div>
@@ -97,7 +141,7 @@ export default function ClientTracker({ initialExpenses }: { initialExpenses: Ex
         <h2>Your Expenses</h2>
         <select 
           value={filter} 
-          onChange={e => setFilter(e.target.value)}
+          onChange={e => handleFilterChange(e.target.value)}
           style={{ width: 'auto', minWidth: '160px' }}
         >
           <option value="all">All Categories</option>
@@ -109,12 +153,12 @@ export default function ClientTracker({ initialExpenses }: { initialExpenses: Ex
       </div>
 
       <div className="expense-list">
-        {filteredExpenses.length === 0 ? (
+        {expenses.length === 0 ? (
           <div className="empty-state">
             <p>No expenses found. Time to add one!</p>
           </div>
         ) : (
-          filteredExpenses.map((expense) => (
+          expenses.map((expense) => (
             <div key={expense.id} className="expense-item">
               <div className="expense-info-left">
                 <span className="expense-title">{expense.title}</span>
